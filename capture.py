@@ -1,0 +1,360 @@
+import argparse
+import asyncio
+import datetime
+import random
+import sys
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+from playwright.async_api import async_playwright
+
+
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_STOCK_FILE = BASE_DIR / "stock.txt"
+DEFAULT_OUTPUT_DIR = BASE_DIR / "stock_images"
+FINVIZ_URL_TEMPLATE = "https://finviz.com/quote?t={ticker}&p=d&r={range_code}"
+DEFAULT_RANGE_CODE = "y1"
+TIME_RANGES = {
+    "1 Month": "m1",
+    "3 Months": "m3",
+    "6 Months": "m6",
+    "1 Year": "y1",
+    "Year to Date": "ytd",
+    "2 Years": "y2",
+    "5 Years": "y5",
+}
+
+VIEWPORT_WIDTH = 1280
+DEFAULT_VIEWPORT_HEIGHT = 1500
+CSS_DPI = 96
+TARGET_DPI = 300
+DEVICE_SCALE_FACTOR = TARGET_DPI / CSS_DPI
+MIN_CAPTURE_DELAY_SECONDS = 3
+MAX_CAPTURE_DELAY_SECONDS = 8
+PAGE_RENDER_WAIT_SECONDS = 5
+PROGRESS_BAR_WIDTH = 24
+
+
+def read_tickers(stock_file):
+    """Read one ticker per line, ignoring empty lines and duplicate symbols."""
+    return parse_tickers(stock_file.read_text(encoding="utf-8-sig"))
+
+
+def parse_tickers(text):
+    """Parse ticker symbols from text, one symbol per line."""
+    tickers = []
+    seen = set()
+
+    for line in text.splitlines():
+        ticker = line.strip().upper()
+        if not ticker or ticker in seen:
+            continue
+        tickers.append(ticker)
+        seen.add(ticker)
+
+    return tickers
+
+
+def build_finviz_url(ticker, range_code=DEFAULT_RANGE_CODE):
+    """Build the Finviz quote URL for one ticker and time range."""
+    return FINVIZ_URL_TEMPLATE.format(ticker=ticker.upper(), range_code=range_code)
+
+
+def get_filename_from_url(url, suffix=".jpg"):
+    """Build a filename from URL query parameters t and r when available."""
+    try:
+        parsed_url = urlparse(url)
+        params = parse_qs(parsed_url.query)
+        ticker = params.get("t", [None])[0]
+        period = params.get("r", [None])[0]
+
+        if ticker and period:
+            return f"{ticker.upper()}_{period}{suffix}"
+        if ticker:
+            return f"{ticker.upper()}{suffix}"
+    except Exception:
+        pass
+
+    return None
+
+
+def format_progress(current, total):
+    """Return a compact text progress bar."""
+    filled = round(PROGRESS_BAR_WIDTH * current / total)
+    bar = "#" * filled + "-" * (PROGRESS_BAR_WIDTH - filled)
+    percent = current * 100 / total
+    return f"[{bar}] {percent:5.1f}%"
+
+
+async def capture_screenshot(page, url, output_path, selector=None, height=DEFAULT_VIEWPORT_HEIGHT):
+    """Capture a page or selector screenshot and return (success, error_message)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    print(f"Opening URL: {url}", flush=True)
+
+    try:
+        await page.set_viewport_size({"width": VIEWPORT_WIDTH, "height": int(height)})
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+        # Finviz chart and quote data can render after DOMContentLoaded.
+        # A fixed render wait is more predictable than networkidle for pages
+        # that keep background requests open.
+        print("Waiting for page content to render...", flush=True)
+        await asyncio.sleep(PAGE_RENDER_WAIT_SECONDS)
+
+        if selector:
+            print(f"Capturing selector: {selector}", flush=True)
+            element = await page.query_selector(selector)
+            if not element:
+                return False, f"Selector not found: {selector}"
+
+            await element.screenshot(path=str(output_path))
+        else:
+            print(
+                "Capturing viewport: "
+                f"{VIEWPORT_WIDTH}x{int(height)} CSS px, "
+                f"{TARGET_DPI} DPI scale ({DEVICE_SCALE_FACTOR:.3f}x)",
+                flush=True,
+            )
+            await page.screenshot(path=str(output_path), full_page=False, type="jpeg", quality=95)
+
+        print(f"Saved image: {output_path}", flush=True)
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
+
+
+async def capture_ticker_list(
+    tickers,
+    output_dir,
+    range_code=DEFAULT_RANGE_CODE,
+    height=DEFAULT_VIEWPORT_HEIGHT,
+    selector=None,
+    progress_callback=None,
+):
+    """Sequentially capture Finviz stock images for an in-memory ticker list."""
+    output_dir = Path(output_dir)
+
+    if not tickers:
+        print("No tickers to capture.", flush=True)
+        return []
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Output directory: {output_dir}", flush=True)
+    print(
+        f"Capture resolution: {TARGET_DPI} DPI scale, viewport {VIEWPORT_WIDTH}x{int(height)} CSS px",
+        flush=True,
+    )
+    print(f"Finviz range code: {range_code}", flush=True)
+
+    failures = []
+
+    async with async_playwright() as p:
+        user_agent = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/121.0.0.0 Safari/537.36"
+        )
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent=user_agent,
+            viewport={"width": VIEWPORT_WIDTH, "height": int(height)},
+            device_scale_factor=DEVICE_SCALE_FACTOR,
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7",
+                "Referer": "https://www.google.com/",
+            },
+        )
+        page = await context.new_page()
+
+        try:
+            for index, ticker in enumerate(tickers, start=1):
+                url = build_finviz_url(ticker, range_code)
+                output_path = output_dir / f"{ticker}.jpg"
+
+                if index > 1:
+                    delay = random.uniform(MIN_CAPTURE_DELAY_SECONDS, MAX_CAPTURE_DELAY_SECONDS)
+                    print(f"Waiting {delay:.1f}s before next capture...", flush=True)
+                    await asyncio.sleep(delay)
+
+                progress = format_progress(index, len(tickers))
+                print(f"{progress} [{index}/{len(tickers)}] Capturing {ticker}...", flush=True)
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "event": "start",
+                            "index": index,
+                            "total": len(tickers),
+                            "ticker": ticker,
+                            "url": url,
+                            "output_path": str(output_path),
+                        }
+                    )
+
+                success, error = await capture_screenshot(page, url, output_path, selector, height)
+                if success:
+                    print(f"[{ticker}] Capture succeeded", flush=True)
+                    if progress_callback:
+                        progress_callback(
+                            {
+                                "event": "success",
+                                "index": index,
+                                "total": len(tickers),
+                                "ticker": ticker,
+                                "output_path": str(output_path),
+                            }
+                        )
+                else:
+                    print(f"[{ticker}] Capture failed: {error}", flush=True)
+                    failures.append((ticker, error))
+                    if progress_callback:
+                        progress_callback(
+                            {
+                                "event": "failure",
+                                "index": index,
+                                "total": len(tickers),
+                                "ticker": ticker,
+                                "error": error,
+                                "output_path": str(output_path),
+                            }
+                        )
+        finally:
+            await browser.close()
+
+    print("", flush=True)
+    print("Capture summary", flush=True)
+    print(f"Success: {len(tickers) - len(failures)}", flush=True)
+    print(f"Failed: {len(failures)}", flush=True)
+
+    if failures:
+        print("Failed tickers:", flush=True)
+        for ticker, error in failures:
+            print(f"- {ticker}: {error}", flush=True)
+        return failures
+
+    print("All stock captures completed successfully.", flush=True)
+    return failures
+
+
+async def capture_stocks(
+    stock_file,
+    output_dir,
+    range_code=DEFAULT_RANGE_CODE,
+    height=DEFAULT_VIEWPORT_HEIGHT,
+    selector=None,
+):
+    """Sequentially capture Finviz stock images listed in stock_file."""
+    stock_file = Path(stock_file)
+
+    if not stock_file.exists():
+        print(f"Stock file not found: {stock_file}", flush=True)
+        return 1
+
+    tickers = read_tickers(stock_file)
+    if not tickers:
+        print(f"No tickers found in: {stock_file}", flush=True)
+        return 1
+
+    print(f"Loaded {len(tickers)} ticker(s) from {stock_file}", flush=True)
+    failures = await capture_ticker_list(
+        tickers,
+        output_dir,
+        range_code=range_code,
+        height=height,
+        selector=selector,
+    )
+    return 1 if failures else 0
+
+
+async def capture_single_url(url, output_path=None, selector=None, height=DEFAULT_VIEWPORT_HEIGHT):
+    """Capture one URL for ad-hoc use."""
+    if not url.startswith("http"):
+        url = "https://" + url
+
+    if output_path:
+        output_path = Path(output_path)
+    else:
+        filename = get_filename_from_url(url)
+        if not filename:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"screenshot_{timestamp}.jpg"
+        output_path = BASE_DIR / filename
+
+    async with async_playwright() as p:
+        user_agent = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/121.0.0.0 Safari/537.36"
+        )
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent=user_agent,
+            viewport={"width": VIEWPORT_WIDTH, "height": int(height)},
+            device_scale_factor=DEVICE_SCALE_FACTOR,
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7",
+                "Referer": "https://www.google.com/",
+            },
+        )
+        page = await context.new_page()
+
+        try:
+            success, error = await capture_screenshot(page, url, output_path, selector, height)
+            if not success:
+                print(f"Capture failed: {error}", flush=True)
+                return 1
+            return 0
+        finally:
+            await browser.close()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Capture Finviz stock curve images.")
+    parser.add_argument(
+        "url",
+        nargs="?",
+        help="Optional single URL to capture. If omitted, stock.txt batch mode is used.",
+    )
+    parser.add_argument("-o", "--output", help="Output file path for single URL mode.")
+    parser.add_argument("-s", "--selector", help="Optional HTML selector to capture.")
+    parser.add_argument(
+        "-height",
+        "--height",
+        type=int,
+        default=DEFAULT_VIEWPORT_HEIGHT,
+        help=f"Viewport height in CSS pixels. Default: {DEFAULT_VIEWPORT_HEIGHT}.",
+    )
+    parser.add_argument(
+        "--stock-file",
+        default=str(DEFAULT_STOCK_FILE),
+        help=f"Ticker list file for batch mode. Default: {DEFAULT_STOCK_FILE}.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help=f"Output directory for batch mode. Default: {DEFAULT_OUTPUT_DIR}.",
+    )
+    parser.add_argument(
+        "--range",
+        choices=sorted(set(TIME_RANGES.values())),
+        default=DEFAULT_RANGE_CODE,
+        help=f"Finviz range code for batch mode. Default: {DEFAULT_RANGE_CODE}.",
+    )
+
+    args = parser.parse_args()
+
+    if args.url:
+        exit_code = asyncio.run(
+            capture_single_url(args.url, args.output, args.selector, args.height)
+        )
+    else:
+        exit_code = asyncio.run(
+            capture_stocks(args.stock_file, args.output_dir, args.range, args.height, args.selector)
+        )
+
+    sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()

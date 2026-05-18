@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+
+stock_images/
+*.log
+
+.streamlit/
