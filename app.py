@@ -5,6 +5,7 @@ import streamlit as st
 
 from capture import (
     DEFAULT_OUTPUT_DIR,
+    DEFAULT_OUTPUT_PDF_PATH,
     DEFAULT_RANGE_CODE,
     DEFAULT_STOCK_FILE,
     DEFAULT_VIEWPORT_HEIGHT,
@@ -20,6 +21,7 @@ from capture import (
 
 
 st.set_page_config(page_title="Stock Curve Capture", layout="wide")
+APP_VERSION = "2.0"
 
 
 def load_tickers_from_ui(uploaded_file, stock_file_path):
@@ -35,7 +37,7 @@ def load_tickers_from_ui(uploaded_file, stock_file_path):
     return read_tickers(path), str(path)
 
 
-def run_capture(tickers, output_dir, range_code, height):
+def run_capture(tickers, output_pdf_path, range_code, height):
     """Run async Playwright capture from Streamlit and update UI progress."""
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -79,10 +81,10 @@ def run_capture(tickers, output_dir, range_code, height):
             )
             add_log(f"[{ticker}] Failed: {event.get('error', '')}")
 
-    failures = asyncio.run(
+    result = asyncio.run(
         capture_ticker_list(
             tickers,
-            output_dir,
+            output_pdf_path,
             range_code=range_code,
             height=height,
             progress_callback=on_progress,
@@ -90,17 +92,17 @@ def run_capture(tickers, output_dir, range_code, height):
     )
 
     progress_bar.progress(1.0)
-    return failures, results
+    return result, results
 
 
-st.title("Stock Curve Capture")
+st.title(f"Stock Curve Capture v{APP_VERSION}")
 
 with st.sidebar:
     st.header("Capture Settings")
 
     uploaded_file = st.file_uploader("Ticker txt file", type=["txt"])
     stock_file_path = st.text_input("Local ticker file path", value=str(DEFAULT_STOCK_FILE))
-    output_dir = st.text_input("Output folder", value=str(DEFAULT_OUTPUT_DIR))
+    output_dir = st.text_input("Output PDF path", value=str(DEFAULT_OUTPUT_PDF_PATH))
 
     selected_range_label = st.selectbox(
         "Time interval",
@@ -140,19 +142,21 @@ with right:
     preview_ticker = tickers[0] if tickers else "AAPL"
     st.code(build_finviz_url(preview_ticker, range_code))
     st.write(f"Selected interval: `{selected_range_label}` (`r={range_code}`)")
-    st.write(f"Output folder: `{output_dir}`")
+    st.write(f"Output PDF path: `{output_dir}`")
 
 st.divider()
 
 can_run = bool(tickers) and bool(output_dir.strip())
 if st.button("Start Capture", type="primary", disabled=not can_run):
     st.subheader("Progress")
-    failures, results = run_capture(tickers, output_dir.strip(), range_code, int(height))
+    result, results = run_capture(tickers, output_dir.strip(), range_code, int(height))
+    failures = result["failures"]
 
     st.subheader("Summary")
     success_count = len(tickers) - len(failures)
     st.write(f"Success: `{success_count}`")
     st.write(f"Failed: `{len(failures)}`")
+    st.write(f"Saved PDF: `{result.get('pdf_path', '')}`")
 
     if results:
         st.dataframe(results, use_container_width=True, hide_index=True)

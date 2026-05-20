@@ -3,15 +3,19 @@ import asyncio
 import datetime
 import random
 import sys
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from playwright.async_api import async_playwright
+from PIL import Image, ImageDraw, ImageFont
 
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_STOCK_FILE = BASE_DIR / "stock.txt"
 DEFAULT_OUTPUT_DIR = BASE_DIR / "stock_images"
+DEFAULT_OUTPUT_PDF_DIR = BASE_DIR / "stock_images"
+DEFAULT_OUTPUT_PDF_PATH = DEFAULT_OUTPUT_PDF_DIR / "stock_capture.pdf"
 FINVIZ_URL_TEMPLATE = "https://finviz.com/quote?t={ticker}&p=d&r={range_code}"
 DEFAULT_RANGE_CODE = "y1"
 TIME_RANGES = {
@@ -33,6 +37,8 @@ MIN_CAPTURE_DELAY_SECONDS = 3
 MAX_CAPTURE_DELAY_SECONDS = 8
 PAGE_RENDER_WAIT_SECONDS = 5
 PROGRESS_BAR_WIDTH = 24
+PDF_PAGE_MARGIN = 32
+PDF_TITLE_HEIGHT = 48
 
 
 def read_tickers(stock_file):
@@ -127,21 +133,21 @@ async def capture_screenshot(page, url, output_path, selector=None, height=DEFAU
 
 async def capture_ticker_list(
     tickers,
-    output_dir,
+    output_pdf_path,
     range_code=DEFAULT_RANGE_CODE,
     height=DEFAULT_VIEWPORT_HEIGHT,
     selector=None,
     progress_callback=None,
 ):
-    """Sequentially capture Finviz stock images for an in-memory ticker list."""
-    output_dir = Path(output_dir)
+    """Sequentially capture Finviz stock images and save into one multi-page PDF."""
+    output_pdf_path = Path(output_pdf_path)
 
     if not tickers:
         print("No tickers to capture.", flush=True)
-        return []
+        return {"failures": [], "pdf_path": str(output_pdf_path), "saved_pages": 0}
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Output directory: {output_dir}", flush=True)
+    output_pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Output PDF: {output_pdf_path}", flush=True)
     print(
         f"Capture resolution: {TARGET_DPI} DPI scale, viewport {VIEWPORT_WIDTH}x{int(height)} CSS px",
         flush=True,
@@ -149,6 +155,19 @@ async def capture_ticker_list(
     print(f"Finviz range code: {range_code}", flush=True)
 
     failures = []
+    captured_pages = []
+
+    def render_pdf_page(image_bytes, ticker):
+        image = Image.open(BytesIO(image_bytes)).convert("RGB")
+        page_width = image.width + PDF_PAGE_MARGIN * 2
+        page_height = image.height + PDF_TITLE_HEIGHT + PDF_PAGE_MARGIN * 2
+        page = Image.new("RGB", (page_width, page_height), "white")
+        page.paste(image, (PDF_PAGE_MARGIN, PDF_TITLE_HEIGHT + PDF_PAGE_MARGIN))
+
+        draw = ImageDraw.Draw(page)
+        font = ImageFont.load_default()
+        draw.text((PDF_PAGE_MARGIN, PDF_PAGE_MARGIN), str(ticker), fill="black", font=font)
+        return page
 
     async with async_playwright() as p:
         user_agent = (
@@ -171,7 +190,6 @@ async def capture_ticker_list(
         try:
             for index, ticker in enumerate(tickers, start=1):
                 url = build_finviz_url(ticker, range_code)
-                output_path = output_dir / f"{ticker}.jpg"
 
                 if index > 1:
                     delay = random.uniform(MIN_CAPTURE_DELAY_SECONDS, MAX_CAPTURE_DELAY_SECONDS)
@@ -188,11 +206,28 @@ async def capture_ticker_list(
                             "total": len(tickers),
                             "ticker": ticker,
                             "url": url,
-                            "output_path": str(output_path),
+                            "output_path": str(output_pdf_path),
                         }
                     )
 
-                success, error = await capture_screenshot(page, url, output_path, selector, height)
+                try:
+                    await page.set_viewport_size({"width": VIEWPORT_WIDTH, "height": int(height)})
+                    await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                    print("Waiting for page content to render...", flush=True)
+                    await asyncio.sleep(PAGE_RENDER_WAIT_SECONDS)
+
+                    if selector:
+                        element = await page.query_selector(selector)
+                        if not element:
+                            raise RuntimeError(f"Selector not found: {selector}")
+                        image_bytes = await element.screenshot(type="png")
+                    else:
+                        image_bytes = await page.screenshot(full_page=False, type="png")
+                    pdf_page = render_pdf_page(image_bytes, ticker)
+                    captured_pages.append(pdf_page)
+                    success, error = True, None
+                except Exception as exc:
+                    success, error = False, str(exc)
                 if success:
                     print(f"[{ticker}] Capture succeeded", flush=True)
                     if progress_callback:
@@ -202,7 +237,7 @@ async def capture_ticker_list(
                                 "index": index,
                                 "total": len(tickers),
                                 "ticker": ticker,
-                                "output_path": str(output_path),
+                                "output_path": str(output_pdf_path),
                             }
                         )
                 else:
@@ -216,11 +251,16 @@ async def capture_ticker_list(
                                 "total": len(tickers),
                                 "ticker": ticker,
                                 "error": error,
-                                "output_path": str(output_path),
+                                "output_path": str(output_pdf_path),
                             }
                         )
         finally:
             await browser.close()
+
+    if captured_pages:
+        first_page, rest_pages = captured_pages[0], captured_pages[1:]
+        first_page.save(str(output_pdf_path), save_all=True, append_images=rest_pages)
+        print(f"Saved PDF: {output_pdf_path}", flush=True)
 
     print("", flush=True)
     print("Capture summary", flush=True)
@@ -231,20 +271,28 @@ async def capture_ticker_list(
         print("Failed tickers:", flush=True)
         for ticker, error in failures:
             print(f"- {ticker}: {error}", flush=True)
-        return failures
+        return {
+            "failures": failures,
+            "pdf_path": str(output_pdf_path),
+            "saved_pages": len(captured_pages),
+        }
 
     print("All stock captures completed successfully.", flush=True)
-    return failures
+    return {
+        "failures": failures,
+        "pdf_path": str(output_pdf_path),
+        "saved_pages": len(captured_pages),
+    }
 
 
 async def capture_stocks(
     stock_file,
-    output_dir,
+    output_pdf_path,
     range_code=DEFAULT_RANGE_CODE,
     height=DEFAULT_VIEWPORT_HEIGHT,
     selector=None,
 ):
-    """Sequentially capture Finviz stock images listed in stock_file."""
+    """Sequentially capture Finviz stock images listed in stock_file to one PDF."""
     stock_file = Path(stock_file)
 
     if not stock_file.exists():
@@ -259,12 +307,12 @@ async def capture_stocks(
     print(f"Loaded {len(tickers)} ticker(s) from {stock_file}", flush=True)
     failures = await capture_ticker_list(
         tickers,
-        output_dir,
+        output_pdf_path,
         range_code=range_code,
         height=height,
         selector=selector,
     )
-    return 1 if failures else 0
+    return 1 if failures["failures"] else 0
 
 
 async def capture_single_url(url, output_path=None, selector=None, height=DEFAULT_VIEWPORT_HEIGHT):
@@ -331,9 +379,9 @@ def main():
         help=f"Ticker list file for batch mode. Default: {DEFAULT_STOCK_FILE}.",
     )
     parser.add_argument(
-        "--output-dir",
-        default=str(DEFAULT_OUTPUT_DIR),
-        help=f"Output directory for batch mode. Default: {DEFAULT_OUTPUT_DIR}.",
+        "--output-pdf-path",
+        default=str(DEFAULT_OUTPUT_PDF_PATH),
+        help=f"Output PDF path for batch mode. Default: {DEFAULT_OUTPUT_PDF_PATH}.",
     )
     parser.add_argument(
         "--range",
@@ -350,7 +398,7 @@ def main():
         )
     else:
         exit_code = asyncio.run(
-            capture_stocks(args.stock_file, args.output_dir, args.range, args.height, args.selector)
+            capture_stocks(args.stock_file, args.output_pdf_path, args.range, args.height, args.selector)
         )
 
     sys.exit(exit_code)
