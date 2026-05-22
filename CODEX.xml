@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<codex>
+  <project>
+    <name>Stock by Curve</name>
+    <root>K:\mypython\Stock_by_curve</root>
+    <repository>https://github.com/shengic/stock_by_curve</repository>
+    <default_branch>master</default_branch>
+  </project>
+
+  <instructions>
+    <instruction>Use Traditional Chinese when replying to the user in this project session.</instruction>
+    <instruction>Consult with the user before modifying files, launching GUI applications, running captures, or pushing commits.</instruction>
+    <instruction>Reading files is allowed without asking again, per user instruction.</instruction>
+    <instruction>Do not commit generated screenshots, cache folders, or log files.</instruction>
+  </instructions>
+
+  <architecture>
+    <component name="capture.py">
+      Core capture module. It owns ticker parsing, Finviz URL construction, Playwright browser setup,
+      screenshot capture, command-line batch mode, and progress callbacks used by UI layers.
+    </component>
+    <component name="tk_app.py">
+      Tkinter desktop UI. It should keep long-running capture work in a background thread and update
+      widgets through a queue on the Tk main thread.
+    </component>
+    <component name="app.py">
+      Streamlit UI prototype. Keep it working when practical, but the Tkinter UI is the preferred UI.
+    </component>
+  </architecture>
+
+  <capture_defaults>
+    <viewport_width>1280</viewport_width>
+    <viewport_height>1500</viewport_height>
+    <target_dpi>300</target_dpi>
+    <device_scale_factor>3.125</device_scale_factor>
+    <page_render_wait_seconds>5</page_render_wait_seconds>
+    <min_delay_between_tickers_seconds>3</min_delay_between_tickers_seconds>
+    <max_delay_between_tickers_seconds>8</max_delay_between_tickers_seconds>
+  </capture_defaults>
+
+  <finviz>
+    <url_template>https://finviz.com/quote?t={ticker}&amp;p=d&amp;r={range_code}</url_template>
+    <time_ranges>
+      <range label="1 Month" code="m1" />
+      <range label="3 Months" code="m3" />
+      <range label="6 Months" code="m6" />
+      <range label="1 Year" code="y1" />
+      <range label="Year to Date" code="ytd" />
+      <range label="2 Years" code="y2" />
+      <range label="5 Years" code="y5" />
+    </time_ranges>
+  </finviz>
+
+  <verification>
+    <command>python -m py_compile capture.py tk_app.py app.py</command>
+    <command>python tk_app.py</command>
+  </verification>
+
+  <git>
+    <ignore>
+      <path>stock_images/</path>
+      <path>__pycache__/</path>
+      <path>*.log</path>
+    </ignore>
+    <last_known_commit>0abbd2c Add stock curve capture UI</last_known_commit>
+  </git>
+</codex>

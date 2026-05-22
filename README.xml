@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <name>Stock by Curve</name>
+  <description>
+    Capture Finviz stock curve screenshots from a ticker list and save them into a single local PDF file.
+  </description>
+
+  <changelog>
+    <version number="3.0">
+      <change>Updated Tk app version to 3.0.</change>
+      <change>Default paths now auto-resolve from the folder where tk_app.py is located.</change>
+      <change>Default PDF output folder changed to stock_image_pdf.</change>
+      <change>PDF filename field now displays full path and filename.</change>
+      <change>Added a scrollable progress message panel near the progress bar.</change>
+      <change>Progress panel keeps only the latest 200 lines to stay readable.</change>
+      <change>When saving PDF, existing target file is deleted first to prevent duplicate confusion.</change>
+      <change>If Save As is cancelled, temporary PDF is deleted automatically.</change>
+      <change>Increased default Tk window height so bottom progress messages are visible at startup.</change>
+    </version>
+  </changelog>
+
+  <features>
+    <feature>Read ticker symbols from a text file, one ticker per line.</feature>
+    <feature>Capture selected tickers from Finviz sequentially.</feature>
+    <feature>Save captured ticker charts into one multi-page PDF in a user-selected folder.</feature>
+    <feature>Support multiple Finviz time intervals through the r query parameter.</feature>
+    <feature>Provide a Tkinter desktop UI with ticker checkboxes, Select All, progress, and logs.</feature>
+    <feature>Use a 300 DPI capture scale with a default 1280 x 1500 CSS pixel viewport.</feature>
+  </features>
+
+  <files>
+    <file path="capture.py">
+      Core Playwright capture logic and command-line batch mode.
+    </file>
+    <file path="tk_app.py">
+      Tkinter desktop UI for selecting ticker files, output folders, time intervals, and checked tickers.
+    </file>
+    <file path="app.py">
+      Streamlit UI prototype retained for reference.
+    </file>
+    <file path="stock.txt">
+      Default ticker list used by command-line mode and the UI.
+    </file>
+  </files>
+
+  <requirements>
+    <requirement>Python 3</requirement>
+    <requirement>playwright</requirement>
+    <requirement>tkinter</requirement>
+    <requirement>streamlit, only if app.py is used</requirement>
+  </requirements>
+
+  <setup>
+    <command>pip install playwright</command>
+    <command>python -m playwright install chromium</command>
+  </setup>
+
+  <usage>
+    <desktop_ui>
+      <command>python tk_app.py</command>
+      <notes>
+        <note>Select a ticker txt file or use the default stock.txt.</note>
+        <note>Select an output folder or use the default stock_image_pdf folder.</note>
+        <note>Choose the desired time interval.</note>
+        <note>Check the tickers to capture, then click Start Capture.</note>
+      </notes>
+    </desktop_ui>
+
+    <command_line>
+      <command>python -u capture.py</command>
+      <notes>
+        <note>Reads stock.txt from the project folder.</note>
+        <note>Saves images into stock_images by default.</note>
+        <note>Uses 1 Year, r=y1, unless --range is provided.</note>
+      </notes>
+    </command_line>
+  </usage>
+
+  <time_ranges>
+    <range label="1 Month" code="m1" />
+    <range label="3 Months" code="m3" />
+    <range label="6 Months" code="m6" />
+    <range label="1 Year" code="y1" />
+    <range label="Year to Date" code="ytd" />
+    <range label="2 Years" code="y2" />
+    <range label="5 Years" code="y5" />
+  </time_ranges>
+
+  <output>
+    <default_folder>stock_image_pdf</default_folder>
+    <filename_pattern>stock_capture_YYYYMMDD_HHMM.pdf</filename_pattern>
+  </output>
+</project>
