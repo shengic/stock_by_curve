@@ -14,7 +14,7 @@ from PIL import Image, ImageDraw, ImageFont
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_STOCK_FILE = BASE_DIR / "stock.txt"
 DEFAULT_OUTPUT_DIR = BASE_DIR / "stock_images"
-DEFAULT_OUTPUT_PDF_DIR = BASE_DIR / "stock_images"
+DEFAULT_OUTPUT_PDF_DIR = BASE_DIR / "stock_image_pdf"
 DEFAULT_OUTPUT_PDF_PATH = DEFAULT_OUTPUT_PDF_DIR / "stock_capture.pdf"
 FINVIZ_URL_TEMPLATE = "https://finviz.com/quote?t={ticker}&p=d&r={range_code}"
 DEFAULT_RANGE_CODE = "y1"

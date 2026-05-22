@@ -9,10 +9,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from capture import (
-    DEFAULT_OUTPUT_PDF_DIR,
-    DEFAULT_OUTPUT_PDF_PATH,
     DEFAULT_RANGE_CODE,
-    DEFAULT_STOCK_FILE,
     DEFAULT_VIEWPORT_HEIGHT,
     DEVICE_SCALE_FACTOR,
     TARGET_DPI,
@@ -23,7 +20,12 @@ from capture import (
     read_tickers,
 )
 
-APP_VERSION = "2.0"
+APP_VERSION = "3.0"
+APP_BASE_DIR = Path(__file__).resolve().parent
+APP_DEFAULT_STOCK_FILE = APP_BASE_DIR / "stock.txt"
+APP_DEFAULT_OUTPUT_PDF_DIR = APP_BASE_DIR / "stock_image_pdf"
+APP_DEFAULT_OUTPUT_PDF_PATH = APP_DEFAULT_OUTPUT_PDF_DIR / "stock_capture.pdf"
+MAX_PROGRESS_LOG_LINES = 200
 
 
 class StockCaptureApp(tk.Tk):
@@ -31,8 +33,8 @@ class StockCaptureApp(tk.Tk):
         super().__init__()
 
         self.title(f"Stock Curve Capture v{APP_VERSION}")
-        self.geometry("900x640")
-        self.minsize(780, 560)
+        self.geometry("900x760")
+        self.minsize(780, 680)
         self.option_add("*Font", "Georgia 10")
 
         self.event_queue = queue.Queue()
@@ -45,9 +47,9 @@ class StockCaptureApp(tk.Tk):
         self.failures = []
         self.success_count = 0
 
-        self.stock_file_var = tk.StringVar(value=str(DEFAULT_STOCK_FILE))
-        self.output_pdf_dir_var = tk.StringVar(value=str(DEFAULT_OUTPUT_PDF_DIR))
-        self.output_pdf_name_var = tk.StringVar(value=DEFAULT_OUTPUT_PDF_PATH.name)
+        self.stock_file_var = tk.StringVar(value=str(APP_DEFAULT_STOCK_FILE))
+        self.output_pdf_dir_var = tk.StringVar(value=str(APP_DEFAULT_OUTPUT_PDF_DIR))
+        self.output_pdf_name_var = tk.StringVar(value=str(APP_DEFAULT_OUTPUT_PDF_PATH))
         self.range_label_var = tk.StringVar(value=self._default_range_label())
         self.height_var = tk.IntVar(value=DEFAULT_VIEWPORT_HEIGHT)
         self.status_var = tk.StringVar(value="Ready")
@@ -106,7 +108,7 @@ class StockCaptureApp(tk.Tk):
             file_frame, text="Load PDF", command=self._open_output_pdf, state=tk.DISABLED
         )
         self.open_pdf_button.grid(row=1, column=3, padx=(8, 0), pady=(8, 0))
-        self.output_pdf_folder_label = ttk.Label(file_frame, text=str(DEFAULT_OUTPUT_PDF_DIR))
+        self.output_pdf_folder_label = ttk.Label(file_frame, text=self.output_pdf_dir_var.get())
         self.output_pdf_folder_label.grid(row=2, column=1, sticky=tk.W, pady=(4, 0))
 
         settings_frame = ttk.LabelFrame(root, text="Capture Settings", padding=10)
@@ -194,8 +196,15 @@ class StockCaptureApp(tk.Tk):
         self.progress.grid(row=0, column=0, sticky=tk.EW)
         self.start_button = ttk.Button(progress_frame, text="Start Capture", command=self._start_capture)
         self.start_button.grid(row=0, column=1, padx=(10, 0))
+        self.progress_log_text = tk.Text(progress_frame, height=4, wrap=tk.NONE, font=("Georgia", 9))
+        self.progress_log_text.grid(row=1, column=0, sticky=tk.EW, pady=(6, 0))
+        progress_log_scroll = ttk.Scrollbar(
+            progress_frame, orient=tk.VERTICAL, command=self.progress_log_text.yview
+        )
+        progress_log_scroll.grid(row=1, column=1, sticky=tk.NS, pady=(6, 0))
+        self.progress_log_text.configure(yscrollcommand=progress_log_scroll.set, state=tk.DISABLED)
         self.exit_button = ttk.Button(progress_frame, text="Exit", command=self.destroy)
-        self.exit_button.grid(row=1, column=1, padx=(10, 0), pady=(8, 0), sticky=tk.E)
+        self.exit_button.grid(row=2, column=1, padx=(10, 0), pady=(8, 0), sticky=tk.E)
 
         ttk.Label(root, textvariable=self.summary_var).pack(fill=tk.X, pady=(8, 0))
         self._update_preview()
@@ -213,11 +222,13 @@ class StockCaptureApp(tk.Tk):
     def _browse_output_dir(self):
         path = filedialog.askdirectory(
             title="Select output pdf folder",
-            initialdir=self.output_pdf_dir_var.get() or str(DEFAULT_OUTPUT_PDF_DIR),
+            initialdir=self.output_pdf_dir_var.get() or str(APP_DEFAULT_OUTPUT_PDF_DIR),
         )
         if path:
             self.output_pdf_dir_var.set(path)
             self.output_pdf_folder_label.configure(text=path)
+            current_name = Path(self.output_pdf_name_var.get()).name or APP_DEFAULT_OUTPUT_PDF_PATH.name
+            self.output_pdf_name_var.set(str(Path(path) / current_name))
 
     def _load_tickers(self):
         path = Path(self.stock_file_var.get())
@@ -339,7 +350,7 @@ class StockCaptureApp(tk.Tk):
             messagebox.showwarning("No output folder", "Please select an output pdf folder.")
             return
         output_pdf_name = self._default_pdf_name()
-        self.output_pdf_name_var.set(output_pdf_name)
+        self.output_pdf_name_var.set(str(Path(output_pdf_dir) / output_pdf_name))
         output_pdf_path = str(Path(output_pdf_dir) / f"__capture_temp_{output_pdf_name}")
 
         try:
@@ -356,7 +367,9 @@ class StockCaptureApp(tk.Tk):
         self.open_pdf_button.configure(state=tk.DISABLED)
         self.last_output_pdf_path = None
         self._clear_log()
+        self._clear_progress_log()
         self._append_log("Capture started.")
+        self._append_progress_log("Capture started.")
 
         range_code = TIME_RANGES[self.range_label_var.get()]
         args = (checked_tickers, output_pdf_path, range_code, height)
@@ -405,14 +418,17 @@ class StockCaptureApp(tk.Tk):
         if event["event"] == "start":
             self.status_var.set(f"[{index}/{total}] Capturing {ticker}")
             self._append_log(f"[{index}/{total}] Capturing {ticker}: {event['url']}")
+            self._append_progress_log(f"[{index}/{total}] Capturing {ticker}")
         elif event["event"] == "success":
             self.success_count += 1
             self.status_var.set(f"[{index}/{total}] {ticker} saved")
             self._append_log(f"[{ticker}] Success: {event['output_path']}")
+            self._append_progress_log(f"[{index}/{total}] {ticker} saved")
         elif event["event"] == "failure":
             self.failures.append((ticker, event.get("error", "")))
             self.status_var.set(f"[{index}/{total}] {ticker} failed")
             self._append_log(f"[{ticker}] Failed: {event.get('error', '')}")
+            self._append_progress_log(f"[{index}/{total}] {ticker} failed")
 
     def _handle_done(self, result):
         self.is_running = False
@@ -442,11 +458,13 @@ class StockCaptureApp(tk.Tk):
             if final_pdf_path:
                 self._append_log(f"Saved PDF: {final_pdf_path}")
             messagebox.showwarning("Capture completed", f"{failed_count} ticker(s) failed.")
+            self._append_progress_log("Completed with failures")
         else:
             self.status_var.set("All captures completed successfully")
             if final_pdf_path:
                 self._append_log(f"Saved PDF: {final_pdf_path}")
             messagebox.showinfo("Capture completed", "All captures completed successfully.")
+            self._append_progress_log("All captures completed successfully")
 
     def _handle_error(self, error):
         self.is_running = False
@@ -454,6 +472,7 @@ class StockCaptureApp(tk.Tk):
         self.status_var.set("Capture stopped because of an error")
         self.summary_var.set("Capture failed.")
         self._append_log(f"Error: {error}")
+        self._append_progress_log(f"Error: {error}")
         messagebox.showerror("Capture failed", error)
 
     def _open_output_pdf(self):
@@ -477,21 +496,25 @@ class StockCaptureApp(tk.Tk):
             title="Save captured PDF as",
             defaultextension=".pdf",
             filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
-            initialdir=self.output_pdf_dir_var.get() or str(DEFAULT_OUTPUT_PDF_DIR),
+            initialdir=self.output_pdf_dir_var.get() or str(APP_DEFAULT_OUTPUT_PDF_DIR),
             initialfile=default_name,
             parent=self,
         )
         if not target_path:
-            self._append_log(f"Save cancelled. Temporary PDF kept at: {temp_path}")
-            self.output_pdf_name_var.set(temp_path.name)
-            return str(temp_path)
+            if temp_path.exists():
+                temp_path.unlink()
+            self._append_log("Save cancelled. Temporary PDF deleted.")
+            self._append_progress_log("Save cancelled. Temporary PDF deleted.")
+            return None
 
         target = Path(target_path)
         target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            target.unlink()
         shutil.move(str(temp_path), str(target))
         self.output_pdf_dir_var.set(str(target.parent))
         self.output_pdf_folder_label.configure(text=str(target.parent))
-        self.output_pdf_name_var.set(target.name)
+        self.output_pdf_name_var.set(str(target))
         return str(target)
 
     def _append_log(self, message):
@@ -500,10 +523,25 @@ class StockCaptureApp(tk.Tk):
         self.log_text.see(tk.END)
         self.log_text.configure(state=tk.DISABLED)
 
+    def _append_progress_log(self, message):
+        self.progress_log_text.configure(state=tk.NORMAL)
+        self.progress_log_text.insert(tk.END, message + "\n")
+        line_count = int(self.progress_log_text.index("end-1c").split(".")[0])
+        if line_count > MAX_PROGRESS_LOG_LINES:
+            overflow = line_count - MAX_PROGRESS_LOG_LINES
+            self.progress_log_text.delete("1.0", f"{overflow + 1}.0")
+        self.progress_log_text.see(tk.END)
+        self.progress_log_text.configure(state=tk.DISABLED)
+
     def _clear_log(self):
         self.log_text.configure(state=tk.NORMAL)
         self.log_text.delete("1.0", tk.END)
         self.log_text.configure(state=tk.DISABLED)
+
+    def _clear_progress_log(self):
+        self.progress_log_text.configure(state=tk.NORMAL)
+        self.progress_log_text.delete("1.0", tk.END)
+        self.progress_log_text.configure(state=tk.DISABLED)
 
 
 if __name__ == "__main__":
