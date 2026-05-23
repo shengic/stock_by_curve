@@ -3,6 +3,7 @@ import datetime
 import os
 import queue
 import shutil
+import sys
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -21,7 +22,7 @@ from capture import (
 )
 
 APP_VERSION = "4.0"
-APP_BASE_DIR = Path(__file__).resolve().parent
+APP_BASE_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 APP_DEFAULT_STOCK_FILE = APP_BASE_DIR / "stock.txt"
 APP_DEFAULT_OUTPUT_PDF_DIR = APP_BASE_DIR / "stock_image_pdf"
 APP_DEFAULT_OUTPUT_PDF_PATH = APP_DEFAULT_OUTPUT_PDF_DIR / "stock_capture.pdf"

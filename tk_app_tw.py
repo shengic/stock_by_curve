@@ -3,6 +3,7 @@ import datetime
 import os
 import queue
 import shutil
+import sys
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -21,7 +22,7 @@ from capture_tw import (
 )
 
 APP_VERSION = "4.0-TW"
-APP_BASE_DIR = Path(__file__).resolve().parent
+APP_BASE_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 APP_DEFAULT_STOCK_FILE = APP_BASE_DIR / "tw_stock.txt"
 APP_DEFAULT_OUTPUT_PDF_DIR = APP_BASE_DIR / "tw_stock_image_pdf"
 APP_DEFAULT_OUTPUT_PDF_PATH = APP_DEFAULT_OUTPUT_PDF_DIR / "tw_stock_capture.pdf"
@@ -531,15 +532,14 @@ class StockCaptureApp(tk.Tk):
             except Exception:
                 pass
 
-        for pattern in ("stock_capture*.pdf", "__capture_temp_*.pdf"):
-            for pdf_path in Path(folder).glob(pattern):
-                try:
-                    if pdf_path.resolve() in keep_resolved:
-                        continue
-                    pdf_path.unlink(missing_ok=True)
-                except Exception:
-                    # Best effort cleanup; do not block capture flow.
-                    pass
+        for pdf_path in Path(folder).glob("*.pdf"):
+            try:
+                if pdf_path.resolve() in keep_resolved:
+                    continue
+                pdf_path.unlink(missing_ok=True)
+            except Exception:
+                # Best effort cleanup; do not block capture flow.
+                pass
 
     def _append_log(self, message):
         self.log_text.configure(state=tk.NORMAL)
