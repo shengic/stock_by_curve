@@ -1,0 +1,46 @@
+StockCurve User Guide (Windows 11)
+==================================
+
+1) Download the app zip file
+- US users: StockCurve_US.zip
+- TW users: StockCurve_TW.zip
+
+2) Unzip
+- Right-click the zip file -> Extract All...
+- Open the extracted folder.
+
+3) Run app
+- Double-click:
+  - StockCurve_US.exe (US stocks), or
+  - StockCurve_TW.exe (TW stocks)
+
+4) Load stock list first
+- Click "Load" to load stock symbols from:
+  - stock.txt (US app)
+  - tw_stock.txt (TW app)
+
+5) Select stocks (optional)
+- Keep all selected, or check/uncheck symbols as needed.
+
+6) Start capture
+- Click "Start Capture".
+- All stock-curve screenshots are merged into one PDF file in:
+  - stock_image_pdf (US app)
+  - tw_stock_image_pdf (TW app)
+
+7) Wait for completion
+- Wait until progress/status shows completed and completion message appears.
+
+8) Open output folder
+- Click "Open Folder" to open File Explorer at the output path.
+
+9) Upload to NotebookLM
+- Find the newest generated PDF.
+- Open your NotebookLM notebook.
+- Drag and drop the PDF into NotebookLM resources.
+
+Important
+---------
+- Keep all extracted files/folders together. Do not move only the .exe file.
+- If Windows SmartScreen appears: click "More info" -> "Run anyway".
+
