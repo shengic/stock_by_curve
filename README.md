@@ -72,6 +72,13 @@ python -u capture.py
 
 ## Changelog
 
+### v5.1
+
+- TW capture routing is now automatic between `TWSE` and `TPEX`.
+- Added exchange fallback logic for TW symbols in `capture_tw.py`.
+- Added known override for `00937B` to prefer `TPEX`.
+- TW capture now validates resolved TradingView symbol/exchange before screenshot.
+
 ### v3.0
 
 - Updated Tk app version to `3.0`.

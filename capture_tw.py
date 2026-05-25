@@ -16,7 +16,12 @@ DEFAULT_STOCK_FILE = BASE_DIR / "tw_stock.txt"
 DEFAULT_OUTPUT_DIR = BASE_DIR / "stock_images"
 DEFAULT_OUTPUT_PDF_DIR = BASE_DIR / "tw_stock_image_pdf"
 DEFAULT_OUTPUT_PDF_PATH = DEFAULT_OUTPUT_PDF_DIR / "tw_stock_capture.pdf"
-TRADINGVIEW_URL_TEMPLATE = "https://www.tradingview.com/symbols/TWSE-{ticker}/?timeframe={interval}"
+TRADINGVIEW_URL_TEMPLATE = "https://www.tradingview.com/symbols/{exchange}-{ticker}/?timeframe={interval}"
+EXCHANGES = ("TWSE", "TPEX")
+# Known exchange overrides when TradingView does not follow the common default.
+SYMBOL_EXCHANGE_OVERRIDES = {
+    "00937B": "TPEX",
+}
 # TradingView timeframe mapping (TW):
 # UI label -> URL parameter
 TIME_RANGES = {
@@ -64,19 +69,53 @@ def parse_tickers(text):
     return tickers
 
 
-def build_tradingview_url(ticker, interval=DEFAULT_RANGE_CODE):
-    """Build the TradingView TWSE symbol URL for one ticker and timeframe."""
-    return TRADINGVIEW_URL_TEMPLATE.format(ticker=ticker.upper(), interval=interval)
+def build_tradingview_url(ticker, interval=DEFAULT_RANGE_CODE, exchange="TWSE"):
+    """Build one TradingView symbol URL for ticker, timeframe, and exchange."""
+    return TRADINGVIEW_URL_TEMPLATE.format(
+        exchange=exchange.upper(),
+        ticker=ticker.upper(),
+        interval=interval,
+    )
+
+
+def build_tradingview_urls(ticker, interval=DEFAULT_RANGE_CODE):
+    """Build candidate TradingView URLs with exchange fallbacks."""
+    ticker = ticker.upper()
+    preferred = SYMBOL_EXCHANGE_OVERRIDES.get(ticker, "TWSE")
+    exchanges = [preferred] + [exchange for exchange in EXCHANGES if exchange != preferred]
+    return [build_tradingview_url(ticker, interval, exchange) for exchange in exchanges]
+
+
+def extract_symbol_exchange(url):
+    """Extract exchange and ticker from a TradingView symbol URL path."""
+    try:
+        parsed = urlparse(url)
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if len(path_parts) < 2 or path_parts[0].lower() != "symbols":
+            return None, None
+        symbol = path_parts[1].upper()
+        if "-" not in symbol:
+            return None, None
+        exchange, ticker = symbol.split("-", 1)
+        if exchange in EXCHANGES and ticker:
+            return exchange, ticker
+    except Exception:
+        pass
+    return None, None
 
 
 def get_filename_from_url(url, suffix=".jpg"):
-    """Build a filename from TradingView TWSE URL when available."""
+    """Build a filename from TradingView symbol URL when available."""
     try:
         parsed_url = urlparse(url)
         params = parse_qs(parsed_url.query)
         path_parts = [part for part in parsed_url.path.split("/") if part]
         symbol_part = path_parts[1] if len(path_parts) > 1 and path_parts[0] == "symbols" else None
-        ticker = symbol_part.replace("TWSE-", "").upper() if symbol_part and symbol_part.startswith("TWSE-") else None
+        ticker = None
+        if symbol_part and "-" in symbol_part:
+            exchange, symbol_ticker = symbol_part.split("-", 1)
+            if exchange.upper() in EXCHANGES:
+                ticker = symbol_ticker.upper()
         period = params.get("timeframe", [None])[0]
 
         if ticker and period:
@@ -205,7 +244,8 @@ async def capture_ticker_list(
 
         try:
             for index, ticker in enumerate(tickers, start=1):
-                url = build_tradingview_url(ticker, range_code)
+                candidate_urls = build_tradingview_urls(ticker, range_code)
+                url = candidate_urls[0]
 
                 if index > 1:
                     delay = random.uniform(MIN_CAPTURE_DELAY_SECONDS, MAX_CAPTURE_DELAY_SECONDS)
@@ -229,24 +269,37 @@ async def capture_ticker_list(
                         }
                     )
 
-                try:
-                    await page.set_viewport_size({"width": int(width), "height": int(height)})
-                    await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                    print("Waiting for page content to render...", flush=True)
-                    await asyncio.sleep(float(render_wait_seconds))
+                success, error = False, None
+                for candidate_url in candidate_urls:
+                    try:
+                        await page.set_viewport_size({"width": int(width), "height": int(height)})
+                        await page.goto(candidate_url, wait_until="domcontentloaded", timeout=60000)
+                        print("Waiting for page content to render...", flush=True)
+                        await asyncio.sleep(float(render_wait_seconds))
 
-                    if selector:
-                        element = await page.query_selector(selector)
-                        if not element:
-                            raise RuntimeError(f"Selector not found: {selector}")
-                        image_bytes = await element.screenshot(type="png")
-                    else:
-                        image_bytes = await page.screenshot(full_page=False, type="png")
-                    pdf_page = render_pdf_page(image_bytes, ticker)
-                    captured_pages.append(pdf_page)
-                    success, error = True, None
-                except Exception as exc:
-                    success, error = False, str(exc)
+                        resolved_exchange, resolved_ticker = extract_symbol_exchange(page.url)
+                        if resolved_ticker != ticker:
+                            raise RuntimeError(
+                                f"Resolved symbol mismatch. expected={ticker}, got={resolved_ticker or 'unknown'}"
+                            )
+                        if resolved_exchange not in EXCHANGES:
+                            raise RuntimeError("Unable to resolve TWSE/TPEX exchange from TradingView URL.")
+
+                        if selector:
+                            element = await page.query_selector(selector)
+                            if not element:
+                                raise RuntimeError(f"Selector not found: {selector}")
+                            image_bytes = await element.screenshot(type="png")
+                        else:
+                            image_bytes = await page.screenshot(full_page=False, type="png")
+                        pdf_page = render_pdf_page(image_bytes, ticker)
+                        captured_pages.append(pdf_page)
+                        success, error = True, None
+                        url = candidate_url
+                        print(f"[{ticker}] Resolved exchange: {resolved_exchange}", flush=True)
+                        break
+                    except Exception as exc:
+                        error = str(exc)
                 if success:
                     print(f"[{ticker}] Capture succeeded", flush=True)
                     if progress_callback:
