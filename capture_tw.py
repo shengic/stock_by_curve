@@ -22,19 +22,54 @@ EXCHANGES = ("TWSE", "TPEX")
 SYMBOL_EXCHANGE_OVERRIDES = {
     "00937B": "TPEX",
 }
-# TradingView timeframe mapping (TW):
-# UI label -> URL parameter
+
+# New localized timeframe mapping
+# These keys will be used in the UI
 TIME_RANGES = {
-    "5D": "5D",
-    "1M": "1M",
-    "6M": "6M",
-    "12M": "12M",
-    "YTD": "YTD",
-    "60M": "60M",
-    "120M": "120M",
-    "ALL": "ALL",
+    "日線": "DAILY",
+    "周線": "WEEKLY",
+    "月線": "MONTHLY",
+    "季線": "QUARTERLY",
+    "年線": "YEARLY",
 }
-DEFAULT_RANGE_CODE = "12M"
+DEFAULT_RANGE_CODE = "YEARLY"
+
+# Source-specific configurations
+SOURCE_CONFIG = {
+    "GOODINFO": {
+        "height": 4500,
+        "render_wait": 5,
+        "intervals": {
+            "DAILY": "DATE",
+            "WEEKLY": "WEEK",
+            "MONTHLY": "MONTH",
+            "QUARTERLY": "QUAR",
+            "YEARLY": "YEAR",
+        }
+    },
+    "TRADINGVIEW": {
+        "height": 1500,
+        "render_wait": 5,
+        "intervals": {
+            "DAILY": "1D",
+            "WEEKLY": "1W",
+            "MONTHLY": "1M",
+            "QUARTERLY": "3M",
+            "YEARLY": "12M",
+        }
+    },
+    "YAHOO": {
+        "height": 1500,
+        "render_wait": 5,
+        "intervals": {
+            "DAILY": "1d",
+            "WEEKLY": "1wk",
+            "MONTHLY": "1mo",
+            "QUARTERLY": "3mo",
+            "YEARLY": "1y",
+        }
+    }
+}
 
 VIEWPORT_WIDTH = 1280
 DEFAULT_VIEWPORT_HEIGHT = 1500
@@ -69,21 +104,31 @@ def parse_tickers(text):
     return tickers
 
 
-def build_tradingview_url(ticker, interval=DEFAULT_RANGE_CODE, exchange="TWSE"):
-    """Build one TradingView symbol URL for ticker, timeframe, and exchange."""
-    return TRADINGVIEW_URL_TEMPLATE.format(
-        exchange=exchange.upper(),
-        ticker=ticker.upper(),
-        interval=interval,
-    )
+def build_goodinfo_url(ticker, interval_key="DAILY"):
+    """Build Goodinfo.tw URL."""
+    cat = SOURCE_CONFIG["GOODINFO"]["intervals"].get(interval_key, "DATE")
+    return f"https://goodinfo.tw/tw/ShowK_Chart.asp?CHT_CAT={cat}&PRICE_ADJ=F&STOCK_ID={ticker}"
 
 
-def build_tradingview_urls(ticker, interval=DEFAULT_RANGE_CODE):
+def build_tradingview_urls(ticker, interval_key="DAILY"):
     """Build candidate TradingView URLs with exchange fallbacks."""
     ticker = ticker.upper()
+    interval = SOURCE_CONFIG["TRADINGVIEW"]["intervals"].get(interval_key, "1D")
     preferred = SYMBOL_EXCHANGE_OVERRIDES.get(ticker, "TWSE")
     exchanges = [preferred] + [exchange for exchange in EXCHANGES if exchange != preferred]
-    return [build_tradingview_url(ticker, interval, exchange) for exchange in exchanges]
+    return [
+        f"https://www.tradingview.com/symbols/{ex.upper()}-{ticker}/?timeframe={interval}"
+        for ex in exchanges
+    ]
+
+
+def build_yahoo_urls(ticker, interval_key="DAILY"):
+    """Build Yahoo Finance candidate URLs (TW for TWSE, TWO for TPEX)."""
+    # In practice Yahoo often uses .TW for TWSE and .TWO for TPEX
+    return [
+        f"https://finance.yahoo.com/quote/{ticker}.TW/chart",
+        f"https://finance.yahoo.com/quote/{ticker}.TWO/chart"
+    ]
 
 
 def extract_symbol_exchange(url):
@@ -183,6 +228,21 @@ async def capture_screenshot(
         return False, str(exc)
 
 
+USER_AGENTS = [
+    # Chrome on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    # Chrome on macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    # Safari on macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15",
+    # Safari on iPhone
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
+    # Firefox on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
+    # Edge on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0",
+]
+
 async def capture_ticker_list(
     tickers,
     output_pdf_path,
@@ -194,6 +254,7 @@ async def capture_ticker_list(
     progress_callback=None,
 ):
     """Sequentially capture TradingView TW stock images and save into one multi-page PDF."""
+    total_tickers = len(tickers)
     output_pdf_path = Path(output_pdf_path)
 
     if not tickers:
@@ -206,126 +267,161 @@ async def capture_ticker_list(
         f"Capture resolution: {TARGET_DPI} DPI scale, viewport {int(width)}x{int(height)} CSS px",
         flush=True,
     )
-    print(f"TradingView timeframe: {range_code}", flush=True)
-    print(f"Render wait seconds: {float(render_wait_seconds):.1f}", flush=True)
+    print(f"Timeframe: {range_code}", flush=True)
 
     failures = []
     captured_pages = []
 
-    def render_pdf_page(image_bytes, ticker):
+    def render_pdf_pages(image_bytes, ticker):
+        """Split a long image into multiple segments and return as a list of PDF pages."""
         image = Image.open(BytesIO(image_bytes)).convert("RGB")
-        page_width = image.width + PDF_PAGE_MARGIN * 2
-        page_height = image.height + PDF_TITLE_HEIGHT + PDF_PAGE_MARGIN * 2
-        page = Image.new("RGB", (page_width, page_height), "white")
-        page.paste(image, (PDF_PAGE_MARGIN, PDF_TITLE_HEIGHT + PDF_PAGE_MARGIN))
-
-        draw = ImageDraw.Draw(page)
-        font = ImageFont.load_default()
-        draw.text((PDF_PAGE_MARGIN, PDF_PAGE_MARGIN), str(ticker), fill="black", font=font)
-        return page
+        img_w, img_h = image.size
+        
+        # Increased segment height to 4500 for fewer partitions (usually 1 page per capture)
+        max_seg_h = 4500 
+        
+        pages = []
+        for i in range(0, img_h, max_seg_h):
+            seg_h = min(max_seg_h, img_h - i)
+            segment = image.crop((0, i, img_w, i + seg_h))
+            
+            page_w = img_w + PDF_PAGE_MARGIN * 2
+            page_h = seg_h + PDF_TITLE_HEIGHT + PDF_PAGE_MARGIN * 2
+            page = Image.new("RGB", (page_w, page_h), "white")
+            page.paste(segment, (PDF_PAGE_MARGIN, PDF_TITLE_HEIGHT + PDF_PAGE_MARGIN))
+            
+            draw = ImageDraw.Draw(page)
+            font = ImageFont.load_default()
+            label = f"{ticker} [Part {len(pages)+1}]" if img_h > max_seg_h else ticker
+            draw.text((PDF_PAGE_MARGIN, PDF_PAGE_MARGIN), str(label), fill="black", font=font)
+            pages.append(page)
+        return pages
 
     async with async_playwright() as p:
-        user_agent = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/121.0.0.0 Safari/537.36"
-        )
         browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent=user_agent,
-            viewport={"width": int(width), "height": int(height)},
-            device_scale_factor=DEVICE_SCALE_FACTOR,
-            extra_http_headers={
-                "Accept-Language": "en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7",
-                "Referer": "https://www.google.com/",
-            },
-        )
-        page = await context.new_page()
-
+        
         try:
             for index, ticker in enumerate(tickers, start=1):
-                candidate_urls = build_tradingview_urls(ticker, range_code)
-                url = candidate_urls[0]
+                # Randomize User-Agent and Context for each ticker to look like different users
+                user_agent = random.choice(USER_AGENTS)
+                context = await browser.new_context(
+                    user_agent=user_agent,
+                    viewport={"width": int(width), "height": int(height)},
+                    device_scale_factor=DEVICE_SCALE_FACTOR,
+                    extra_http_headers={
+                        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+                    },
+                )
+                page = await context.new_page()
+
+                # Map UI label (e.g., "年線") back to internal key (e.g., "YEARLY")
+                if range_code in TIME_RANGES.values():
+                    interval_key = range_code
+                else:
+                    interval_key = TIME_RANGES.get(range_code, "YEARLY")
 
                 if index > 1:
                     delay = random.uniform(MIN_CAPTURE_DELAY_SECONDS, MAX_CAPTURE_DELAY_SECONDS)
                     print(f"Waiting {delay:.1f}s before next capture...", flush=True)
                     await asyncio.sleep(delay)
 
-                progress = format_progress(index, len(tickers))
-                print(f"{progress} [{index}/{len(tickers)}] Capturing {ticker}...", flush=True)
-                if progress_callback:
-                    progress_callback(
-                        {
-                            "event": "start",
-                            "index": index,
-                            "total": len(tickers),
-                            "ticker": ticker,
-                            "url": url,
-                            "output_path": str(output_pdf_path),
-                            "width": int(width),
-                            "height": int(height),
-                            "render_wait_seconds": float(render_wait_seconds),
-                        }
-                    )
+                progress = format_progress(index, total_tickers)
+                print(f"{progress} [{index}/{total_tickers}] Capturing {ticker}...", flush=True)
 
                 success, error = False, None
-                for candidate_url in candidate_urls:
+                
+                # 1. TradingView (NOW FIRST)
+                try:
+                    await context.set_extra_http_headers({"Referer": "https://www.google.com/"})
+                    tv_urls = build_tradingview_urls(ticker, interval_key)
+                    tv_height = SOURCE_CONFIG["TRADINGVIEW"]["height"]
+                    for tv_url in tv_urls:
+                        try:
+                            print(f"[{ticker}] Trying TradingView: {tv_url}", flush=True)
+                            await page.set_viewport_size({"width": int(width), "height": int(tv_height)})
+                            await page.goto(tv_url, wait_until="domcontentloaded", timeout=60000)
+                            await asyncio.sleep(SOURCE_CONFIG["TRADINGVIEW"]["render_wait"])
+                            resolved_exchange, resolved_ticker = extract_symbol_exchange(page.url)
+                            if resolved_ticker == ticker:
+                                image_bytes = await page.screenshot(full_page=False, type="png")
+                                pdf_pages = render_pdf_pages(image_bytes, f"{ticker} (TradingView)")
+                                captured_pages.extend(pdf_pages)
+                                success = True
+                                print(f"[{ticker}] TradingView capture succeeded", flush=True)
+                                break
+                        except Exception as exc:
+                            error = str(exc)
+                except Exception as exc:
+                    error = str(exc)
+
+                # 2. Goodinfo Fallback (NOW SECOND)
+                if not success:
                     try:
-                        await page.set_viewport_size({"width": int(width), "height": int(height)})
-                        await page.goto(candidate_url, wait_until="domcontentloaded", timeout=60000)
-                        print("Waiting for page content to render...", flush=True)
-                        await asyncio.sleep(float(render_wait_seconds))
+                        g_url = build_goodinfo_url(ticker, interval_key)
+                        g_height = SOURCE_CONFIG["GOODINFO"]["height"]
+                        print(f"[{ticker}] Trying Goodinfo fallback: {g_url}", flush=True)
+                        await page.set_viewport_size({"width": int(width), "height": int(g_height)})
+                        await context.set_extra_http_headers({
+                            "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+                            "Referer": "https://goodinfo.tw/tw/index.asp",
+                        })
+                        await page.goto(g_url, wait_until="load", timeout=60000)
+                        
+                        # Trigger scrolling
+                        await page.evaluate("window.scrollTo(0, 500)")
+                        await asyncio.sleep(1)
+                        await page.evaluate(f"window.scrollTo(0, {int(g_height) // 2})")
+                        await asyncio.sleep(1)
+                        await page.evaluate("window.scrollTo(0, 0)")
+                        
+                        try:
+                            await page.wait_for_selector("#divK_Chart_Detail", timeout=5000)
+                        except:
+                            pass
 
-                        resolved_exchange, resolved_ticker = extract_symbol_exchange(page.url)
-                        if resolved_ticker != ticker:
-                            raise RuntimeError(
-                                f"Resolved symbol mismatch. expected={ticker}, got={resolved_ticker or 'unknown'}"
-                            )
-                        if resolved_exchange not in EXCHANGES:
-                            raise RuntimeError("Unable to resolve TWSE/TPEX exchange from TradingView URL.")
+                        await asyncio.sleep(SOURCE_CONFIG["GOODINFO"]["render_wait"])
+                        content = await page.content()
+                        if "查無資料" in content:
+                            raise RuntimeError("Goodinfo: No data")
 
-                        if selector:
-                            element = await page.query_selector(selector)
-                            if not element:
-                                raise RuntimeError(f"Selector not found: {selector}")
-                            image_bytes = await element.screenshot(type="png")
-                        else:
-                            image_bytes = await page.screenshot(full_page=False, type="png")
-                        pdf_page = render_pdf_page(image_bytes, ticker)
-                        captured_pages.append(pdf_page)
-                        success, error = True, None
-                        url = candidate_url
-                        print(f"[{ticker}] Resolved exchange: {resolved_exchange}", flush=True)
-                        break
+                        image_bytes = await page.screenshot(full_page=False, type="png")
+                        pdf_pages = render_pdf_pages(image_bytes, f"{ticker} (Goodinfo)")
+                        captured_pages.extend(pdf_pages)
+                        success = True
+                        print(f"[{ticker}] Goodinfo capture succeeded", flush=True)
                     except Exception as exc:
+                        print(f"[{ticker}] Goodinfo fallback failed: {exc}", flush=True)
                         error = str(exc)
+
+                # 3. Yahoo Fallback
+                if not success:
+                    y_urls = build_yahoo_urls(ticker, interval_key)
+                    y_height = SOURCE_CONFIG["YAHOO"]["height"]
+                    for y_url in y_urls:
+                        try:
+                            print(f"[{ticker}] Trying Yahoo fallback: {y_url}", flush=True)
+                            await page.set_viewport_size({"width": int(width), "height": int(y_height)})
+                            await page.goto(y_url, wait_until="domcontentloaded", timeout=60000)
+                            await asyncio.sleep(SOURCE_CONFIG["YAHOO"]["render_wait"])
+                            image_bytes = await page.screenshot(full_page=False, type="png")
+                            pdf_pages = render_pdf_pages(image_bytes, f"{ticker} (Yahoo)")
+                            captured_pages.extend(pdf_pages)
+                            success = True
+                            print(f"[{ticker}] Yahoo capture succeeded", flush=True)
+                            break
+                        except Exception as exc:
+                            error = str(exc)
+
                 if success:
-                    print(f"[{ticker}] Capture succeeded", flush=True)
                     if progress_callback:
-                        progress_callback(
-                            {
-                                "event": "success",
-                                "index": index,
-                                "total": len(tickers),
-                                "ticker": ticker,
-                                "output_path": str(output_pdf_path),
-                            }
-                        )
+                        progress_callback({"event": "success", "index": index, "total": total_tickers, "ticker": ticker, "output_path": str(output_pdf_path)})
                 else:
-                    print(f"[{ticker}] Capture failed: {error}", flush=True)
                     failures.append((ticker, error))
                     if progress_callback:
-                        progress_callback(
-                            {
-                                "event": "failure",
-                                "index": index,
-                                "total": len(tickers),
-                                "ticker": ticker,
-                                "error": error,
-                                "output_path": str(output_pdf_path),
-                            }
-                        )
+                        progress_callback({"event": "failure", "index": index, "total": total_tickers, "ticker": ticker, "error": error, "output_path": str(output_pdf_path)})
+                
+                # Close context per ticker to ensure fresh identity
+                await context.close()
         finally:
             await browser.close()
 

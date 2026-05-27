@@ -16,12 +16,11 @@ from capture_tw import (
     TARGET_DPI,
     TIME_RANGES,
     VIEWPORT_WIDTH,
-    build_tradingview_url,
     capture_ticker_list,
     read_tickers,
 )
 
-APP_VERSION = "4.0-TW"
+APP_VERSION = "4.1-TW"
 APP_BASE_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 APP_DEFAULT_STOCK_FILE = APP_BASE_DIR / "tw_stock.txt"
 APP_DEFAULT_OUTPUT_PDF_DIR = APP_BASE_DIR / "tw_stock_image_pdf"
@@ -310,16 +309,20 @@ class StockCaptureApp(tk.Tk):
             self.selected_ticker = self.tickers[0]
 
     def _update_preview(self):
-        height = DEFAULT_VIEWPORT_HEIGHT
+        range_code = self.range_label_var.get()
+        ticker = self._selected_ticker()
+        
+        # Goodinfo is our primary preview
+        from capture_tw import build_goodinfo_url, SOURCE_CONFIG
+        url = build_goodinfo_url(ticker, TIME_RANGES.get(range_code, "DAILY"))
+        height = SOURCE_CONFIG["GOODINFO"]["height"]
         width = VIEWPORT_WIDTH
 
-        range_code = TIME_RANGES[self.range_label_var.get()]
-        ticker = self._selected_ticker()
-        self.preview_label.configure(text=f"URL preview: {build_tradingview_url(ticker, range_code)}")
+        self.preview_label.configure(text=f"Primary URL preview (Goodinfo): {url}")
         self.resolution_label.configure(
             text=(
-                f"{width} x {height} CSS px, "
-                f"{TARGET_DPI} DPI scale ({DEVICE_SCALE_FACTOR:.3f}x)"
+                f"Goodinfo: {width} x {height} px | "
+                f"Others: {width} x 1500 px"
             )
         )
 
